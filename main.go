@@ -22,14 +22,16 @@ var assets embed.FS
 var templates = template.Must(template.ParseFS(assets, "templates.html"))
 
 type Word struct {
-	ID                     int64
-	English, French, Group string
+	ID                             int64
+	English, French, Group, Gender string
 }
 type Page struct {
 	Words, AllWords                                  []Word
 	Groups                                           []string
 	Filter                                           string
 	Card                                             *Word
+	Editor                                           *Word
+	EditorError                                      string
 	Direction, Mode, Prompt, Answer, Feedback, Error string
 	Correct, Checked                                 bool
 	Total, Attempts, Success                         int
@@ -47,14 +49,20 @@ func openDB(path string) (*sql.DB, error) {
 		db.Close()
 		return nil, err
 	}
-	// Add groups to existing databases without changing vocabulary or history.
-	var hasGroup int
-	if err = db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('words') WHERE name='word_group'").Scan(&hasGroup); err == nil && hasGroup == 0 {
-		_, err = db.Exec("ALTER TABLE words ADD COLUMN word_group TEXT NOT NULL DEFAULT ''")
-	}
-	if err != nil {
-		db.Close()
-		return nil, err
+	// Add optional metadata without changing existing words or practice history.
+	for _, column := range []string{"word_group", "gender"} {
+		var present int
+		if err = db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('words') WHERE name=?", column).Scan(&present); err == nil && present == 0 {
+			definition := "TEXT NOT NULL DEFAULT ''"
+			if column == "gender" {
+				definition += " CHECK(gender IN ('','masculine','feminine'))"
+			}
+			_, err = db.Exec("ALTER TABLE words ADD COLUMN " + column + " " + definition)
+		}
+		if err != nil {
+			db.Close()
+			return nil, err
+		}
 	}
 	return db, nil
 }
@@ -120,14 +128,14 @@ func (a *App) page(r *http.Request) (Page, error) {
 	if r.FormValue("mode") == "mixed" {
 		p.Mode = "mixed"
 	}
-	rows, err := a.db.Query("SELECT id,english,french,word_group FROM words ORDER BY english COLLATE NOCASE")
+	rows, err := a.db.Query("SELECT id,english,french,word_group,gender FROM words ORDER BY english COLLATE NOCASE")
 	if err != nil {
 		return p, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var w Word
-		if err = rows.Scan(&w.ID, &w.English, &w.French, &w.Group); err != nil {
+		if err = rows.Scan(&w.ID, &w.English, &w.French, &w.Group, &w.Gender); err != nil {
 			return p, err
 		}
 		p.AllWords = append(p.AllWords, w)
@@ -193,6 +201,10 @@ func cleanGroup(value string, groups []string) (string, error) {
 	return value, nil
 }
 
+func validGender(value string) bool {
+	return value == "" || value == "masculine" || value == "feminine"
+}
+
 func (a *App) render(w http.ResponseWriter, r *http.Request, p Page) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	name := "page"
@@ -226,12 +238,15 @@ func (a *App) serve(w http.ResponseWriter, r *http.Request) {
 		en, enErr := cleanTranslations(r.FormValue("english"))
 		fr, frErr := cleanTranslations(r.FormValue("french"))
 		group, groupErr := cleanGroup(r.FormValue("group"), p.Groups)
+		gender := r.FormValue("gender")
 		if enErr != nil {
 			p.Error = enErr.Error()
 		} else if frErr != nil {
 			p.Error = frErr.Error()
 		} else if groupErr != nil {
 			p.Error = groupErr.Error()
+		} else if !validGender(gender) {
+			p.Error = "Choose masculine, feminine, or leave noun gender unspecified."
 		} else {
 			for _, existing := range p.AllWords {
 				if normalize(existing.English) == normalize(en) && normalize(existing.French) == normalize(fr) {
@@ -244,7 +259,7 @@ func (a *App) serve(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 			}
-			result, e := a.db.Exec("INSERT INTO words(english,french,word_group) VALUES(?,?,?) ON CONFLICT DO NOTHING", en, fr, group)
+			result, e := a.db.Exec("INSERT INTO words(english,french,word_group,gender) VALUES(?,?,?,?) ON CONFLICT DO NOTHING", en, fr, group, gender)
 			if e != nil {
 				err = e
 			} else {
@@ -265,6 +280,97 @@ func (a *App) serve(w http.ResponseWriter, r *http.Request) {
 			if err == nil {
 				err = a.card(&p, "")
 			}
+		}
+	case "/edit":
+		id, parseErr := strconv.ParseInt(r.FormValue("id"), 10, 64)
+		var original *Word
+		if parseErr == nil {
+			for _, word := range p.AllWords {
+				if word.ID == id {
+					copy := word
+					original = &copy
+					break
+				}
+			}
+		}
+		if original == nil {
+			http.Error(w, "This word no longer exists.", 404)
+			return
+		}
+		if r.Method == "GET" {
+			p.Editor = original
+			if r.Header.Get("HX-Request") == "true" {
+				w.Header().Set("Content-Type", "text/html; charset=utf-8")
+				if e := templates.ExecuteTemplate(w, "editor", p); e != nil {
+					log.Print(e)
+				}
+				return
+			}
+		} else if r.Method == "POST" {
+			submitted := Word{ID: id, English: r.FormValue("english"), French: r.FormValue("french"), Group: r.FormValue("group"), Gender: r.FormValue("gender")}
+			en, enErr := cleanTranslations(submitted.English)
+			fr, frErr := cleanTranslations(submitted.French)
+			group, groupErr := cleanGroup(submitted.Group, p.Groups)
+			switch {
+			case enErr != nil:
+				p.EditorError = enErr.Error()
+			case frErr != nil:
+				p.EditorError = frErr.Error()
+			case groupErr != nil:
+				p.EditorError = groupErr.Error()
+			case !validGender(submitted.Gender):
+				p.EditorError = "Choose masculine, feminine, or leave noun gender unspecified."
+			}
+			if p.EditorError == "" {
+				for _, word := range p.AllWords {
+					if word.ID != id && normalize(word.English) == normalize(en) && normalize(word.French) == normalize(fr) {
+						p.EditorError = "That word pair is already in your collection."
+						break
+					}
+				}
+			}
+			if p.EditorError != "" {
+				p.Editor = &submitted
+			} else {
+				_, err = a.db.Exec("UPDATE words SET english=?,french=?,word_group=?,gender=? WHERE id=?", en, fr, group, submitted.Gender, id)
+				if err == nil {
+					p, err = a.page(r)
+					p.Feedback = "Word updated."
+				}
+			}
+		} else {
+			http.Error(w, "Method not allowed", 405)
+			return
+		}
+		if err == nil {
+			err = a.card(&p, "")
+		}
+	case "/gender":
+		if r.Method != "POST" {
+			http.Error(w, "Method not allowed", 405)
+			return
+		}
+		gender := r.FormValue("gender")
+		if !validGender(gender) {
+			p.Error = "Choose masculine, feminine, or leave noun gender unspecified."
+		} else {
+			var result sql.Result
+			result, err = a.db.Exec("UPDATE words SET gender=? WHERE id=?", gender, r.FormValue("id"))
+			if err == nil {
+				n, e := result.RowsAffected()
+				err = e
+				if err == nil && n == 0 {
+					http.Error(w, "This word no longer exists.", 404)
+					return
+				}
+			}
+			if err == nil {
+				p, err = a.page(r)
+				p.Feedback = "Noun gender saved."
+			}
+		}
+		if err == nil {
+			err = a.card(&p, "")
 		}
 	case "/group":
 		if r.Method != "POST" {
@@ -311,7 +417,7 @@ func (a *App) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var word Word
-		err = a.db.QueryRow("SELECT id,english,french,word_group FROM words WHERE id=?", r.FormValue("id")).Scan(&word.ID, &word.English, &word.French, &word.Group)
+		err = a.db.QueryRow("SELECT id,english,french,word_group,gender FROM words WHERE id=?", r.FormValue("id")).Scan(&word.ID, &word.English, &word.French, &word.Group, &word.Gender)
 		if err == sql.ErrNoRows {
 			http.Error(w, "This word no longer exists. Refresh to continue.", 404)
 			return

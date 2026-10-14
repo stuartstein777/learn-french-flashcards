@@ -23,4 +23,12 @@ go vet ./...
 
 ## Vocabulary groups
 
-When adding a word, type an optional free-text group (for example, Clothing, Greetings or Food), or choose an existing group from the input suggestions. Group names ignore case and extra spaces when reusing an existing group. Use Practice group and New card to practise all words, a single group, or ungrouped words. The vocabulary table follows the same filter; overall practice totals remain global. Use each word’s Group field and Save button to group or move existing words. Clear the field to make a word ungrouped. Groups are listed while they contain words. Existing words become ungrouped automatically, without losing translations or practice history.
+When adding a word, type an optional free-text group (for example, Clothing, Greetings or Food), or choose an existing group from the input suggestions. Group names ignore case and extra spaces when reusing an existing group. Use Practice group and New card to practise all words, a single group, or ungrouped words. The vocabulary table follows the same filter; overall practice totals remain global. Use each word’s Edit button to group or move existing words. Clear the Group field to make a word ungrouped. Groups are listed while they contain words. Existing words become ungrouped automatically, without losing translations or practice history.
+
+## Noun gender
+
+Choose the optional French noun gender when adding a word: Masculine, Feminine, or Not specified / not a noun. The saved gender appears on flashcards and in the vocabulary table, where it can be changed or cleared in the Edit dialog. Gender is a learning hint; translation checking still uses the translations you entered, including any articles. Existing words start with no gender specified, and the automatic database update preserves groups and practice history.
+
+## Editing words
+
+Click Edit beside a vocabulary word to open its editor. Change English/French translations (including semicolon-separated alternatives), group, and French noun gender, then use Save changes. Cancel, the close button, or Escape dismiss the editor without saving. Validation errors keep the editor open with your entries intact. Updates preserve the word’s practice history and your current practice group and direction.
