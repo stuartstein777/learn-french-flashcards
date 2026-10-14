@@ -17,9 +17,9 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
-//go:embed templates.html static/*
+//go:embed *.html static/*
 var assets embed.FS
-var templates = template.Must(template.ParseFS(assets, "templates.html"))
+var templates = template.Must(template.ParseFS(assets, "*.html"))
 
 type Word struct {
 	ID                             int64
@@ -44,7 +44,7 @@ func openDB(path string) (*sql.DB, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS words (id INTEGER PRIMARY KEY, english TEXT NOT NULL COLLATE NOCASE, french TEXT NOT NULL COLLATE NOCASE, UNIQUE(english,french)); CREATE TABLE IF NOT EXISTS attempts (id INTEGER PRIMARY KEY, word_id INTEGER NOT NULL REFERENCES words(id) ON DELETE CASCADE, correct INTEGER NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);`)
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS words (id INTEGER PRIMARY KEY, english TEXT NOT NULL COLLATE NOCASE, french TEXT NOT NULL COLLATE NOCASE, UNIQUE(english,french)); CREATE TABLE IF NOT EXISTS attempts (id INTEGER PRIMARY KEY, word_id INTEGER NOT NULL REFERENCES words(id) ON DELETE CASCADE, correct INTEGER NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP); CREATE TABLE IF NOT EXISTS rules (id INTEGER PRIMARY KEY, title TEXT NOT NULL, explanation TEXT NOT NULL, correct_example TEXT NOT NULL DEFAULT '', incorrect_example TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT '', topic TEXT NOT NULL DEFAULT '');`)
 	if err != nil {
 		db.Close()
 		return nil, err
@@ -216,9 +216,13 @@ func (a *App) render(w http.ResponseWriter, r *http.Request, p Page) {
 	}
 }
 func (a *App) serve(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, 8192)
+	r.Body = http.MaxBytesReader(w, r.Body, 65536)
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "Invalid form", 400)
+		return
+	}
+	if r.URL.Path == "/rules" || strings.HasPrefix(r.URL.Path, "/rules/") {
+		a.serveRules(w, r)
 		return
 	}
 	p, err := a.page(r)

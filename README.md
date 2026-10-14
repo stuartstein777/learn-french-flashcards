@@ -32,3 +32,7 @@ Choose the optional French noun gender when adding a word: Masculine, Feminine, 
 ## Editing words
 
 Click Edit beside a vocabulary word to open its editor. Change English/French translations (including semicolon-separated alternatives), group, and French noun gender, then use Save changes. Cancel, the close button, or Escape dismiss the editor without saving. Validation errors keep the editor open with your entries intact. Updates preserve the word’s practice history and your current practice group and direction.
+
+## Rules notebook
+
+Open Rules notebook in the navigation to keep explanations separate from vocabulary practice. Add a title and explanation, with optional correct/incorrect examples, a personal reminder, and a topic. Type new topic names or reuse suggestions. Click a rule heading to expand it; Edit opens the same style of popup used for vocabulary. Cancel or Escape closes the editor without saving. Search covers titles, explanations, examples, reminders, and topics, and can be combined with a topic filter. Remove asks for confirmation. Rules persist in a separate SQLite table and do not count toward flashcard practice or scores.
