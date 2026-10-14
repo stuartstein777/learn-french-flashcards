@@ -12,7 +12,7 @@ go run .
 
 Open http://localhost:8080. Run commands from this directory. No Node.js or frontend build step is needed; HTMX is served locally.
 
-Add English/French words or phrases, pick a translation direction, type your answer, and check it. Answers ignore case, whitespace and straight versus curly apostrophes, but require correct accents. Separate alternative translations with semicolons in either language: for example, English `well; good` and French `bien` accept either `well` or `good` when translating from French. Enter any one translation as your answer. The first alternative is shown when that language is used as the question; feedback shows all accepted alternatives. Commas remain part of phrases. Existing vocabulary and practice history continue to work without a database migration. Remove unwanted words from the vocabulary table. Data and practice totals persist in `french.db` across restarts. Removing a word also removes its practice history.
+Add English/French words or phrases, pick a translation direction, type your answer, and check it. Answers ignore case, whitespace and straight versus curly apostrophes, but require correct accents. Separate alternative translations with semicolons in either language: for example, English `well; good` and French `bien` accept either `well` or `good` when translating from French. Enter any one translation as your answer. The first alternative is shown when that language is used as the question; feedback shows all accepted alternatives. Commas remain part of phrases. Existing vocabulary and practice history are preserved. Remove unwanted words from the vocabulary table. Data and practice totals persist in `french.db` across restarts. Removing a word also removes its practice history.
 
 Optional environment variables: `PORT` (default `8080`) and `DATABASE_PATH` (default `french.db`). The app binds to loopback and is intended for personal local use, without user accounts.
 
@@ -20,3 +20,7 @@ Optional environment variables: `PORT` (default `8080`) and `DATABASE_PATH` (def
 go test ./...
 go vet ./...
 ```
+
+## Vocabulary groups
+
+When adding a word, type an optional free-text group (for example, Clothing, Greetings or Food), or choose an existing group from the input suggestions. Group names ignore case and extra spaces when reusing an existing group. Use Practice group and New card to practise all words, a single group, or ungrouped words. The vocabulary table follows the same filter; overall practice totals remain global. Use each word’s Group field and Save button to group or move existing words. Clear the field to make a word ungrouped. Groups are listed while they contain words. Existing words become ungrouped automatically, without losing translations or practice history.

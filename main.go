@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"html/template"
 	"log"
+	"math/rand/v2"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -20,11 +22,13 @@ var assets embed.FS
 var templates = template.Must(template.ParseFS(assets, "templates.html"))
 
 type Word struct {
-	ID              int64
-	English, French string
+	ID                     int64
+	English, French, Group string
 }
 type Page struct {
-	Words                                            []Word
+	Words, AllWords                                  []Word
+	Groups                                           []string
+	Filter                                           string
 	Card                                             *Word
 	Direction, Mode, Prompt, Answer, Feedback, Error string
 	Correct, Checked                                 bool
@@ -39,6 +43,15 @@ func openDB(path string) (*sql.DB, error) {
 	}
 	db.SetMaxOpenConns(1)
 	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS words (id INTEGER PRIMARY KEY, english TEXT NOT NULL COLLATE NOCASE, french TEXT NOT NULL COLLATE NOCASE, UNIQUE(english,french)); CREATE TABLE IF NOT EXISTS attempts (id INTEGER PRIMARY KEY, word_id INTEGER NOT NULL REFERENCES words(id) ON DELETE CASCADE, correct INTEGER NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);`)
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
+	// Add groups to existing databases without changing vocabulary or history.
+	var hasGroup int
+	if err = db.QueryRow("SELECT COUNT(*) FROM pragma_table_info('words') WHERE name='word_group'").Scan(&hasGroup); err == nil && hasGroup == 0 {
+		_, err = db.Exec("ALTER TABLE words ADD COLUMN word_group TEXT NOT NULL DEFAULT ''")
+	}
 	if err != nil {
 		db.Close()
 		return nil, err
@@ -103,42 +116,55 @@ func direction(r *http.Request) string {
 	return d
 }
 func (a *App) page(r *http.Request) (Page, error) {
-	p := Page{Direction: direction(r), Mode: direction(r)}
+	p := Page{Direction: direction(r), Mode: direction(r), Filter: r.FormValue("filter")}
 	if r.FormValue("mode") == "mixed" {
 		p.Mode = "mixed"
 	}
-	rows, err := a.db.Query("SELECT id,english,french FROM words ORDER BY english COLLATE NOCASE")
+	rows, err := a.db.Query("SELECT id,english,french,word_group FROM words ORDER BY english COLLATE NOCASE")
 	if err != nil {
 		return p, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var w Word
-		if err = rows.Scan(&w.ID, &w.English, &w.French); err != nil {
+		if err = rows.Scan(&w.ID, &w.English, &w.French, &w.Group); err != nil {
 			return p, err
 		}
-		p.Words = append(p.Words, w)
+		p.AllWords = append(p.AllWords, w)
+		if p.Filter == "" || (p.Filter == "ungrouped" && w.Group == "") || p.Filter == "group:"+w.Group {
+			p.Words = append(p.Words, w)
+		}
 	}
 	if err = rows.Err(); err != nil {
 		return p, err
 	}
 	rows.Close()
-	p.Total = len(p.Words)
+	p.Total = len(p.AllWords)
+	seen := make(map[string]bool)
+	for _, word := range p.AllWords {
+		if word.Group != "" && !seen[word.Group] {
+			p.Groups = append(p.Groups, word.Group)
+			seen[word.Group] = true
+		}
+	}
+	sort.Slice(p.Groups, func(i, j int) bool { return strings.ToLower(p.Groups[i]) < strings.ToLower(p.Groups[j]) })
 	err = a.db.QueryRow("SELECT COUNT(*),COALESCE(SUM(correct),0) FROM attempts").Scan(&p.Attempts, &p.Success)
 	return p, err
 }
 func (a *App) card(p *Page, exclude string) error {
-	w := Word{}
-	err := a.db.QueryRow("SELECT id,english,french FROM words WHERE id != ? ORDER BY RANDOM() LIMIT 1", exclude).Scan(&w.ID, &w.English, &w.French)
-	if err == sql.ErrNoRows {
-		err = a.db.QueryRow("SELECT id,english,french FROM words ORDER BY RANDOM() LIMIT 1").Scan(&w.ID, &w.English, &w.French)
+	var candidates []Word
+	for _, word := range p.Words {
+		if strconv.FormatInt(word.ID, 10) != exclude {
+			candidates = append(candidates, word)
+		}
 	}
-	if err == sql.ErrNoRows {
+	if len(candidates) == 0 {
+		candidates = p.Words
+	}
+	if len(candidates) == 0 {
 		return nil
 	}
-	if err != nil {
-		return err
-	}
+	w := candidates[rand.IntN(len(candidates))]
 	p.Card = &w
 	if p.Direction == "mixed" {
 		if time.Now().UnixNano()%2 == 0 {
@@ -154,6 +180,19 @@ func (a *App) card(p *Page, exclude string) error {
 	}
 	return nil
 }
+func cleanGroup(value string, groups []string) (string, error) {
+	value = strings.Join(strings.Fields(value), " ")
+	if len([]rune(value)) > 80 {
+		return "", fmt.Errorf("Keep group names within 80 characters.")
+	}
+	for _, group := range groups {
+		if normalize(value) == normalize(group) {
+			return group, nil
+		}
+	}
+	return value, nil
+}
+
 func (a *App) render(w http.ResponseWriter, r *http.Request, p Page) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	name := "page"
@@ -186,19 +225,26 @@ func (a *App) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		en, enErr := cleanTranslations(r.FormValue("english"))
 		fr, frErr := cleanTranslations(r.FormValue("french"))
+		group, groupErr := cleanGroup(r.FormValue("group"), p.Groups)
 		if enErr != nil {
 			p.Error = enErr.Error()
 		} else if frErr != nil {
 			p.Error = frErr.Error()
+		} else if groupErr != nil {
+			p.Error = groupErr.Error()
 		} else {
-			for _, existing := range p.Words {
+			for _, existing := range p.AllWords {
 				if normalize(existing.English) == normalize(en) && normalize(existing.French) == normalize(fr) {
 					p.Error = "That word pair is already in your collection."
+					if err = a.card(&p, ""); err != nil {
+						http.Error(w, "Database unavailable", 500)
+						return
+					}
 					a.render(w, r, p)
 					return
 				}
 			}
-			result, e := a.db.Exec("INSERT INTO words(english,french) VALUES(?,?) ON CONFLICT DO NOTHING", en, fr)
+			result, e := a.db.Exec("INSERT INTO words(english,french,word_group) VALUES(?,?,?) ON CONFLICT DO NOTHING", en, fr, group)
 			if e != nil {
 				err = e
 			} else {
@@ -220,6 +266,33 @@ func (a *App) serve(w http.ResponseWriter, r *http.Request) {
 				err = a.card(&p, "")
 			}
 		}
+	case "/group":
+		if r.Method != "POST" {
+			http.Error(w, "Method not allowed", 405)
+			return
+		}
+		group, groupErr := cleanGroup(r.FormValue("group"), p.Groups)
+		if groupErr != nil {
+			p.Error = groupErr.Error()
+		} else {
+			var result sql.Result
+			result, err = a.db.Exec("UPDATE words SET word_group=? WHERE id=?", group, r.FormValue("id"))
+			if err == nil {
+				n, e := result.RowsAffected()
+				err = e
+				if err == nil && n == 0 {
+					http.Error(w, "This word no longer exists.", 404)
+					return
+				}
+			}
+			if err == nil {
+				p, err = a.page(r)
+				p.Feedback = "Group saved."
+			}
+		}
+		if err == nil {
+			err = a.card(&p, "")
+		}
 	case "/delete":
 		if r.Method != "POST" {
 			http.Error(w, "Method not allowed", 405)
@@ -238,7 +311,7 @@ func (a *App) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var word Word
-		err = a.db.QueryRow("SELECT id,english,french FROM words WHERE id=?", r.FormValue("id")).Scan(&word.ID, &word.English, &word.French)
+		err = a.db.QueryRow("SELECT id,english,french,word_group FROM words WHERE id=?", r.FormValue("id")).Scan(&word.ID, &word.English, &word.French, &word.Group)
 		if err == sql.ErrNoRows {
 			http.Error(w, "This word no longer exists. Refresh to continue.", 404)
 			return
