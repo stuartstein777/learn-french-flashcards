@@ -1,0 +1,39 @@
+# Go build and test outputs
+/learn-french
+/learn-french.exe
+/bin/
+/dist/
+*.test
+*.test.exe
+*.out
+/coverage/
+/coverage.*
+
+# Local Go workspace configuration
+go.work
+go.work.sum
+
+# SQLite databases and journal files
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+
+# Local environment configuration
+.env
+.env.*
+!.env.example
+!.env.sample
+
+# Editor and operating-system files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# HTMX is served from static/; keep those assets tracked.
